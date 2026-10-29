@@ -73,8 +73,8 @@
 </section>
 
 <section id="admin" class="page">
-<div class="section-head" style="margin-top:0"><div><h2>Admin panel</h2><p>Create and update listings stored in this browser.</p></div><button class="btn outline" onclick="exportJobs()">Export listings JSON</button></div>
-<div class="card"><h2 id="adminFormTitle" style="font-size:15px;margin:0 0 15px">Add a job listing</h2><div class="formgrid">
+<div class="section-head" style="margin-top:0"><div><h2>Admin panel</h2><p>Cloud listings are shared across visitors after Supabase setup.</p></div><div><button class="btn outline" onclick="adminSignIn()">Admin sign in</button> <button class="btn outline" onclick="adminSignOut()">Sign out</button> <button class="btn outline" onclick="exportJobs()">Export listings JSON</button></div></div>
+<div class="status-note"><strong>Cloud setup:</strong> This page uses Supabase only after the project URL and anon/public key are entered in the code and the SQL setup file is run. Admin changes require signing in with the configured admin email. Until configured, listings stay in this browser.</div><div class="card"><h2 id="adminFormTitle" style="font-size:15px;margin:0 0 15px">Add a job listing</h2><div class="formgrid">
 <div class="formfield"><label>Job title *</label><input id="aTitle" placeholder="Job title"></div><div class="formfield"><label>Employer / department *</label><input id="aCompany" placeholder="Company or department"></div>
 <div class="formfield"><label>Category *</label><select id="aCategory"><option>Government</option><option>Private</option><option>Work From Home</option><option>Internship</option></select></div><div class="formfield"><label>Location</label><input id="aLocation" placeholder="India / state / city / remote"></div>
 <div class="formfield"><label>Qualification</label><input id="aQualification" placeholder="Eligibility summary"></div><div class="formfield"><label>Salary / pay</label><input id="aSalary" placeholder="As per rules / ₹..."></div>
@@ -88,9 +88,82 @@
 </section>
 <div id="toast" class="toast"></div>
 </main>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 const DBKEY='india-jobs-board-v1', SAVEKEY='india-jobs-saved-v1', RESKEY='india-jobs-resume-v1';
+
+// STEP 2: Paste your Supabase Project URL and anon/public key here.
+// Never paste a service_role/secret key into this file.
+const SUPABASE_URL = 'https://hmnbmqdiiauccxwdfvqt.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_4L9kwO3joLta_wGhMUDzyQ_aveqTMIc';
+const ADMIN_EMAIL = 'prajpoot32@gmail.com';
+
+let supabase = null;
+let cloudReady = false;
 let jobs=loadJobs(), saved=new Set(JSON.parse(localStorage.getItem(SAVEKEY)||'[]')), editingId=null, resumeText='';
+let cloudBusy = false;
+
+function initSupabase(){
+  if(!window.supabase || SUPABASE_URL.includes('PASTE_') || SUPABASE_ANON_KEY.includes('PASTE_')) return;
+  supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  cloudReady = true;
+}
+async function cloudLoadJobs(){
+  if(!cloudReady) return;
+  const {data,error}=await supabase.from('jobs').select('*').order('created_at',{ascending:false});
+  if(error){console.error(error);toast('Supabase read failed. Check SQL/RLS setup.');return;}
+  jobs=(data||[]).map(fromDb);
+  persist();
+  renderAll();
+}
+function fromDb(r){
+  return {id:String(r.id),title:r.title||'',company:r.employer||'',category:r.category||'Government',
+    location:r.location||'',qualification:r.qualification||'',salary:r.salary||'',deadline:r.deadline||'',
+    status:r.status||'Unverified',source:r.source_url||'',checked:r.last_checked||'',description:r.description||'',
+    total:r.total_vacancies==null?'':String(r.total_vacancies),filled:r.filled_vacancies==null?'':String(r.filled_vacancies),
+    countSource:r.count_source||'',created:r.created_at||''};
+}
+function toDb(j){
+  return {title:j.title,employer:j.company,category:j.category,location:j.location||null,
+    qualification:j.qualification||null,salary:j.salary||null,deadline:j.deadline||null,status:j.status||'Unverified',
+    source_url:j.source,last_checked:j.checked||null,description:j.description||null,
+    total_vacancies:j.total===''?null:Number(j.total),filled_vacancies:j.filled===''?null:Number(j.filled),
+    count_source:j.countSource||null};
+}
+async function cloudSaveJob(j){
+  if(!cloudReady) return false;
+  const {data:sessionData}=await supabase.auth.getSession();
+  if(!sessionData.session){toast('Cloud changes require admin sign-in. Use the Admin sign-in section.');return false;}
+  let result;
+  if(editingId) result=await supabase.from('jobs').update(toDb(j)).eq('id',editingId).select().single();
+  else result=await supabase.from('jobs').insert(toDb(j)).select().single();
+  if(result.error){console.error(result.error);toast('Cloud save failed. Check admin email and RLS policies.');return false;}
+  return true;
+}
+async function cloudDeleteJob(id){
+  if(!cloudReady) return false;
+  const {data:sessionData}=await supabase.auth.getSession();
+  if(!sessionData.session){toast('Cloud delete requires admin sign-in.');return false;}
+  const {error}=await supabase.from('jobs').delete().eq('id',Number(id));
+  if(error){console.error(error);toast('Cloud delete failed. Check RLS policies.');return false;}
+  return true;
+}
+async function adminSignIn(){
+  if(!cloudReady){toast('Add Supabase URL and anon key in this file first.');return;}
+  const email=prompt('Admin email address:');
+  if(!email)return;
+  const password=prompt('Supabase Auth password:');
+  if(!password)return;
+  const {error}=await supabase.auth.signInWithPassword({email,password});
+  if(error){toast('Sign-in failed: '+error.message);return;}
+  toast('Admin signed in.');
+  await cloudLoadJobs();
+}
+async function adminSignOut(){
+  if(!cloudReady)return;
+  await supabase.auth.signOut();
+  toast('Signed out.');
+}
 function today(){return new Date().toISOString().slice(0,10)}
 function loadJobs(){try{const s=localStorage.getItem(DBKEY);return s?JSON.parse(s):[]}catch(e){return []}}
 function persist(){localStorage.setItem(DBKEY,JSON.stringify(jobs))}
@@ -112,11 +185,23 @@ function jobDetails(id){let j=jobs.find(x=>x.id===id);if(!j)return;alert(`${j.ti
 function renderAlerts(){let list=jobs.filter(j=>effectiveStatus(j)==='Closing Soon'||effectiveStatus(j)==='Unverified'||(j.checked&&Math.abs((new Date(today())-new Date(j.checked+'T00:00:00'))/86400000)>7));document.getElementById('alertList').innerHTML=list.length?list.map(j=>`<div class="alertrow"><div class="dot"></div><div style="flex:1"><strong>${esc(j.title)} — ${esc(effectiveStatus(j))}</strong><div class="mini">${esc(j.company)} · Deadline: ${esc(fmtDate(j.deadline))} · Last checked: ${esc(fmtDate(j.checked))}</div><div class="mini">${esc(vacancyText(j))}</div></div><button class="btn outline" onclick="editJob('${j.id}')">Update</button></div>`).join(''):'<div class="empty"><strong>No alerts right now</strong>Add listings to see deadline and verification reminders.</div>'}
 function refreshChecks(){renderAlerts();toast('Local deadlines checked. Official websites are not fetched automatically in this offline prototype.')}
 function resetAdmin(){editingId=null;document.getElementById('adminFormTitle').textContent='Add a job listing';['aTitle','aCompany','aLocation','aQualification','aSalary','aDeadline','aSource','aDescription','aTotal','aFilled','aCountSource'].forEach(id=>document.getElementById(id).value='');document.getElementById('aCategory').value='Government';document.getElementById('aStatus').value='Unverified';document.getElementById('aChecked').value=today()}
-function saveJob(){let title=document.getElementById('aTitle').value.trim(),company=document.getElementById('aCompany').value.trim(),source=document.getElementById('aSource').value.trim();if(!title||!company||!source){toast('Job title, employer and official source URL are required.');return}try{new URL(source)}catch(e){toast('Please enter a valid source URL.');return}let j={id:editingId||('job-'+Date.now()),title,company,category:document.getElementById('aCategory').value,location:document.getElementById('aLocation').value.trim(),qualification:document.getElementById('aQualification').value.trim(),salary:document.getElementById('aSalary').value.trim(),deadline:document.getElementById('aDeadline').value, status:document.getElementById('aStatus').value,source,checked:document.getElementById('aChecked').value||today(),description:document.getElementById('aDescription').value.trim(),total:document.getElementById('aTotal').value,filled:document.getElementById('aFilled').value,countSource:document.getElementById('aCountSource').value.trim(),created:editingId?(jobs.find(x=>x.id===editingId)?.created||today()):today()};if(j.total!==''&&j.filled!==''&&(!j.countSource||Number(j.filled)>Number(j.total))){toast('For vacancy counts, add an official count source and ensure filled ≤ total.');return}if(editingId)jobs=jobs.map(x=>x.id===editingId?j:x);else jobs.unshift(j);persist();resetAdmin();renderAll();toast('Listing saved locally.')}
+async function saveJob(){let title=document.getElementById('aTitle').value.trim(),company=document.getElementById('aCompany').value.trim(),source=document.getElementById('aSource').value.trim();if(!title||!company||!source){toast('Job title, employer and official source URL are required.');return}try{new URL(source)}catch(e){toast('Please enter a valid source URL.');return}let j={id:editingId||('job-'+Date.now()),title,company,category:document.getElementById('aCategory').value,location:document.getElementById('aLocation').value.trim(),qualification:document.getElementById('aQualification').value.trim(),salary:document.getElementById('aSalary').value.trim(),deadline:document.getElementById('aDeadline').value, status:document.getElementById('aStatus').value,source,checked:document.getElementById('aChecked').value||today(),description:document.getElementById('aDescription').value.trim(),total:document.getElementById('aTotal').value,filled:document.getElementById('aFilled').value,countSource:document.getElementById('aCountSource').value.trim(),created:editingId?(jobs.find(x=>x.id===editingId)?.created||today()):today()};if(j.total!==''&&j.filled!==''&&(!j.countSource||Number(j.filled)>Number(j.total))){toast('For vacancy counts, add an official count source and ensure filled ≤ total.');return}if(cloudReady){
+  const ok=await cloudSaveJob(j);
+  if(!ok)return;
+  await cloudLoadJobs();
+  resetAdmin();renderAll();toast('Listing saved to Supabase for all visitors.');
+}else{
+  if(editingId)jobs=jobs.map(x=>x.id===editingId?j:x);else jobs.unshift(j);
+  persist();resetAdmin();renderAll();toast('Saved in this browser only. Add Supabase keys to enable cloud storage.');
+}}
 function renderAdmin(){document.getElementById('adminCount').textContent=`${jobs.length} record${jobs.length===1?'':'s'}`;document.getElementById('adminRows').innerHTML=jobs.length?jobs.map(j=>`<tr><td><strong>${esc(j.title)}</strong><div class="mini">${esc(j.company)}</div></td><td>${esc(j.category)}</td><td><span class="badge ${statusClass(effectiveStatus(j))}">${esc(effectiveStatus(j))}</span></td><td>${esc(fmtDate(j.checked))}</td><td><button class="btn light" onclick="editJob('${j.id}')">Edit</button> <button class="btn red" onclick="deleteJob('${j.id}')">Delete</button></td></tr>`).join(''):'<tr><td colspan="5" class="empty">No listings. Add the first job above.</td></tr>'}
 function editJob(id){let j=jobs.find(x=>x.id===id);if(!j)return;editingId=id;let map={aTitle:'title',aCompany:'company',aCategory:'category',aLocation:'location',aQualification:'qualification',aSalary:'salary',aDeadline:'deadline',aStatus:'status',aSource:'source',aChecked:'checked',aDescription:'description',aTotal:'total',aFilled:'filled',aCountSource:'countSource'};Object.entries(map).forEach(([el,key])=>document.getElementById(el).value=j[key]??'');document.getElementById('adminFormTitle').textContent='Edit job listing';showPage('admin');window.scrollTo(0,document.getElementById('adminFormTitle').offsetTop)}
-function deleteJob(id){if(!confirm('Delete this listing?'))return;jobs=jobs.filter(j=>j.id!==id);saved.delete(id);persist();localStorage.setItem(SAVEKEY,JSON.stringify([...saved]));renderAll();toast('Listing deleted.')}
-function clearAllJobs(){if(!confirm('Delete all job listings from this browser? Export a backup first if needed.'))return;jobs=[];saved.clear();persist();localStorage.setItem(SAVEKEY,'[]');renderAll();toast('All local listings deleted.')}
+async function deleteJob(id){if(!confirm('Delete this listing?'))return;
+if(cloudReady){const ok=await cloudDeleteJob(id);if(!ok)return;await cloudLoadJobs();}
+else{jobs=jobs.filter(j=>j.id!==id);persist();}
+saved.delete(id);localStorage.setItem(SAVEKEY,JSON.stringify([...saved]));renderAll();toast('Listing deleted.')}
+function clearAllJobs(){if(cloudReady){toast('For safety, delete cloud listings one at a time from Manage listings.');return}
+if(!confirm('Delete all job listings from this browser? Export a backup first if needed.'))return;jobs=[];saved.clear();persist();localStorage.setItem(SAVEKEY,'[]');renderAll();toast('All local listings deleted.')}
 function exportJobs(){let blob=new Blob([JSON.stringify(jobs,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='india-jobs-listings.json';a.click();URL.revokeObjectURL(url)}
 function importJobs(){document.getElementById('importFile').click()}
 function handleImport(e){let file=e.target.files[0];if(!file)return;let r=new FileReader();r.onload=()=>{try{let data=JSON.parse(r.result);if(!Array.isArray(data))throw 0;jobs=data;persist();renderAll();toast('Listings imported.')}catch(err){toast('Invalid JSON file.')}e.target.value=''};r.readAsText(file)}
@@ -126,7 +211,7 @@ function clearResume(){['rName','rContact','rRole','rEducation','rExperience','r
 function copyResume(){let txt=document.getElementById('resumePreview').innerText;if(!txt||txt.includes('will appear here')){toast('Generate a resume first.');return}navigator.clipboard?.writeText(txt).then(()=>toast('Resume copied.')).catch(()=>toast('Clipboard unavailable; select the text to copy.'))}
 function downloadResume(){let txt=document.getElementById('resumePreview').innerText;if(!txt||txt.includes('will appear here')){buildResume();txt=document.getElementById('resumePreview').innerText}let blob=new Blob([txt],{type:'text/plain;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='india-jobs-resume.txt';a.click();URL.revokeObjectURL(url)}
 function renderAll(){renderHome();renderJobs();renderSaved();renderAlerts();renderAdmin()}
-resetAdmin();renderAll();
+resetAdmin();renderAll();initSupabase();if(cloudReady)cloudLoadJobs();
 </script>
 </body>
 </html>
